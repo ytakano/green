@@ -1,6 +1,7 @@
 .global asm_spawn
 .global set_context
 .global switch_context
+.global enter_entry
 
 asm_spawn:
     stp x30, xzr, [sp, #-16]!
@@ -18,8 +19,7 @@ set_context:
     stp x23, x24, [x0, #16 * 6]
     stp x25, x26, [x0, #16 * 7]
     stp x27, x28, [x0, #16 * 8]
-
-    mrs x1, sp_el0
+    mov x1, sp
     stp x30, x1, [x0, #16 * 9]
 
     // return 0
@@ -36,8 +36,8 @@ switch_context:
     ldp x23, x24, [x0, #16 * 6]
     ldp x25, x26, [x0, #16 * 7]
     ldp x27, x28, [x0, #16 * 8]
-    ldp x30,  x1, [x0, #16 * 9]
-    msr sp_el0, x1
+    ldp x30, x2, [x0, #16 * 9]
+    mov sp, x2
 
     // return 1
     mov x0, 1

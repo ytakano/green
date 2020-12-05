@@ -1,11 +1,20 @@
 mod green;
 
-#[no_mangle]
-pub extern "C" fn fun1() -> () {
-    println!("Hello, world!");
+fn fun1() -> () {
+    green::spawn(fun2, 2 * 1024 * 1024);
+    for _ in 0..10 {
+        println!("fun1!");
+        green::schedule();
+    }
+}
+
+fn fun2() -> () {
+    for _ in 0..10 {
+        println!("fun2!");
+        green::schedule();
+    }
 }
 
 fn main() {
-    green::spawn(fun1, 2 * 1024 * 1024);
-    println!("finished");
+    green::spawn_from_main(fun1, 2 * 1024 * 1024);
 }
