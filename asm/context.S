@@ -1,13 +1,5 @@
-.global asm_spawn
 .global set_context
 .global switch_context
-.global enter_entry
-
-asm_spawn:
-    stp x30, xzr, [sp, #-16]!
-    blr x0
-    ldp x30, xzr, [sp], #16
-    ret
 
 set_context:
     stp d8, d9, [x0]

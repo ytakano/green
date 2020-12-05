@@ -1,13 +1,14 @@
 use libc;
 use std::collections::LinkedList;
-use std::mem::size_of;
 use std::ptr;
 
 type Entry = fn();
 
+const PAGE_SIZE: usize = 4 * 1024; // 4KiB
+
 #[repr(C)]
 struct Registers {
-    // callee save registers
+    // callee-saved registers
     d8: u64,
     d9: u64,
     d10: u64,
@@ -42,6 +43,51 @@ impl Context {
     fn get_regs(&mut self) -> *mut Registers {
         &mut self.regs as *mut Registers
     }
+
+    fn new(func: Entry, stack_size: usize) -> Context {
+        // allocate stack
+        let stack = if stack_size != 0 {
+            let mut stack: *mut libc::c_void = ptr::null_mut();
+            let result = unsafe {
+                libc::posix_memalign(&mut stack as *mut *mut libc::c_void, PAGE_SIZE, stack_size)
+            };
+            if result != 0 {
+                panic!("failed posix_memalign");
+            }
+            stack
+        } else {
+            ptr::null_mut()
+        };
+
+        let regs = Registers {
+            d8: 0,
+            d9: 0,
+            d10: 0,
+            d11: 0,
+            d12: 0,
+            d13: 0,
+            d14: 0,
+            d15: 0,
+            x19: 0,
+            x20: 0,
+            x21: 0,
+            x22: 0,
+            x23: 0,
+            x24: 0,
+            x25: 0,
+            x26: 0,
+            x27: 0,
+            x28: 0,
+            x30: entry_point as u64,
+            sp: stack as u64 + stack_size as u64,
+        };
+
+        Context {
+            regs: regs,
+            stack: stack,
+            entry: func,
+        }
+    }
 }
 
 extern "C" {
@@ -49,35 +95,37 @@ extern "C" {
     fn switch_context(ctx: *mut Registers) -> !;
 }
 
-const PAGE_SIZE: usize = 4 * 1024; // 4KiB
-
-static mut CTX_MAIN: *mut Context = ptr::null_mut();
+static mut CTX_MAIN: Option<Box<Context>> = None;
 static mut UNUSED_STACK: *mut libc::c_void = ptr::null_mut();
-static mut CONTEXTS: LinkedList<*mut Context> = LinkedList::new();
+static mut CONTEXTS: LinkedList<Box<Context>> = LinkedList::new();
+
+fn dummy() {
+    loop {}
+}
 
 pub fn spawn_from_main(func: Entry, stack_size: usize) {
     unsafe {
-        if CTX_MAIN != ptr::null_mut() {
+        if let Some(_) = &CTX_MAIN {
             panic!("spawn_from_main is called again before clean up");
         }
 
-        CTX_MAIN = libc::malloc(size_of::<Context>()) as *mut Context;
-        if set_context((*CTX_MAIN).get_regs()) == 0 {
-            let ctx = alloc_ctx(func, stack_size);
-            CONTEXTS.push_back(ctx);
-            switch_context((*ctx).get_regs());
-        } else {
-            rm_unused_stack();
-            libc::free(CTX_MAIN as *mut libc::c_void);
-            CTX_MAIN = ptr::null_mut();
+        CTX_MAIN = Some(Box::new(Context::new(dummy, 0)));
+        if let Some(ctx) = &mut CTX_MAIN {
+            if set_context(ctx.get_regs()) == 0 {
+                CONTEXTS.push_back(Box::new(Context::new(func, stack_size)));
+                let first = CONTEXTS.front_mut().unwrap();
+                switch_context(first.get_regs());
+            } else {
+                rm_unused_stack();
+                CTX_MAIN = None;
+            }
         }
     }
 }
 
 pub fn spawn(func: Entry, stack_size: usize) -> () {
     unsafe {
-        let ctx = alloc_ctx(func, stack_size);
-        CONTEXTS.push_back(ctx);
+        CONTEXTS.push_back(Box::new(Context::new(func, stack_size)));
         schedule();
     }
 }
@@ -88,35 +136,16 @@ pub fn schedule() {
             return;
         }
 
-        let ctx = CONTEXTS.pop_front().unwrap();
+        let mut ctx = CONTEXTS.pop_front().unwrap();
+        let regs = ctx.get_regs();
         CONTEXTS.push_back(ctx);
-        if set_context((*ctx).get_regs()) == 0 {
-            let next = CONTEXTS.front().unwrap();
+        if set_context(regs) == 0 {
+            let next = CONTEXTS.front_mut().unwrap();
             switch_context((**next).get_regs());
         } else {
             rm_unused_stack();
         }
     }
-}
-
-unsafe fn alloc_ctx(func: Entry, stack_size: usize) -> *mut Context {
-    // allocate context
-    let ctx_ptr = libc::malloc(size_of::<Context>());
-    let mut ctx = ctx_ptr as *mut Context;
-
-    // allocate stack
-    let mut stack: *mut libc::c_void = ptr::null_mut();
-    let result = libc::posix_memalign(&mut stack as *mut *mut libc::c_void, PAGE_SIZE, stack_size);
-    if result != 0 {
-        panic!("failed posix_memalign");
-    }
-
-    (*ctx).regs.x30 = entry_point as u64;
-    (*ctx).regs.sp = stack as u64 + stack_size as u64;
-    (*ctx).stack = stack;
-    (*ctx).entry = func;
-
-    ctx
 }
 
 extern "C" fn entry_point() {
@@ -126,13 +155,17 @@ extern "C" fn entry_point() {
 
         let ctx = CONTEXTS.pop_front().unwrap();
         UNUSED_STACK = (*ctx).stack;
-        libc::free(ctx as *mut libc::c_void);
 
-        let ctx = match CONTEXTS.front() {
-            Some(c) => *c,
-            None => CTX_MAIN,
+        match CONTEXTS.front_mut() {
+            Some(c) => {
+                switch_context((**c).get_regs());
+            }
+            None => {
+                if let Some(c) = &mut CTX_MAIN {
+                    switch_context(c.get_regs());
+                }
+            }
         };
-        switch_context((*ctx).get_regs());
     }
 }
 
