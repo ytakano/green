@@ -33,7 +33,7 @@ fn producer() {
 
 fn consumer() {
     for _ in 0..10 {
-        let msg = green::recv("count");
+        let msg = green::recv("count").unwrap();
         println!("received: count -> {}", msg);
     }
 }

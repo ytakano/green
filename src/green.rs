@@ -32,7 +32,6 @@ struct Registers {
     sp: u64,  // stack pointer
 }
 
-#[repr(C)]
 struct Context {
     regs: Registers,
     stack: *mut libc::c_void,
@@ -203,11 +202,11 @@ pub fn send(key: &'static str, msg: i64) {
     schedule();
 }
 
-pub fn recv(key: &'static str) -> i64 {
+pub fn recv(key: &'static str) -> Option<i64> {
     unsafe {
         // return if a message is aleady sent
         if let Some(msg) = (*MESSAGES).pop_front(key) {
-            return msg;
+            return Some(msg);
         }
 
         // panic if there is no other thread
@@ -229,11 +228,8 @@ pub fn recv(key: &'static str) -> i64 {
         rm_unused_stack();
 
         // take a value
-        if let Some(msg) = (*MESSAGES).pop_front(key) {
-            return msg;
-        }
-    };
-    panic!("never reach here");
+        (*MESSAGES).pop_front(key)
+    }
 }
 
 pub fn schedule() {
