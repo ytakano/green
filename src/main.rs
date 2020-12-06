@@ -1,28 +1,43 @@
 mod green;
 
-fn fun1() -> () {
-    green::spawn(fun2, 2 * 1024 * 1024);
+fn mash() {
+    green::spawn(ortega, 2 * 1024 * 1024);
     for _ in 0..10 {
-        println!("fun1! x");
+        println!("Mash!");
         green::schedule();
     }
 }
 
-fn fun2() -> () {
-    green::spawn(fun3, 2 * 1024 * 1024);
+fn ortega() {
     for _ in 0..10 {
-        println!("fun2! xx");
+        println!("Ortega!");
         green::schedule();
     }
 }
 
-fn fun3() -> () {
+fn gaia() {
+    green::spawn(mash, 2 * 1024 * 1024);
     for _ in 0..10 {
-        println!("fun3! xxx");
+        println!("Gaia!");
         green::schedule();
+    }
+}
+
+fn producer() {
+    green::spawn(gaia, 2 * 1024 * 1024);
+    green::spawn(consumer, 2 * 1024 * 1024);
+    for i in 0..10 {
+        green::send("count", i);
+    }
+}
+
+fn consumer() {
+    for _ in 0..10 {
+        let msg = green::recv("count");
+        println!("received: count -> {}", msg);
     }
 }
 
 fn main() {
-    green::spawn_from_main(fun1, 2 * 1024 * 1024);
+    green::spawn_from_main(producer, 2 * 1024 * 1024);
 }

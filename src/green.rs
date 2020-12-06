@@ -1,5 +1,5 @@
 use libc;
-use std::collections::LinkedList;
+use std::collections::{HashMap, LinkedList};
 use std::ptr;
 
 type Entry = fn();
@@ -102,9 +102,49 @@ extern "C" {
     fn switch_context(ctx: *mut Registers) -> !;
 }
 
+struct MappedList<T> {
+    map: HashMap<&'static str, LinkedList<T>>,
+}
+
+impl<T> MappedList<T> {
+    fn new() -> MappedList<T> {
+        MappedList {
+            map: HashMap::new(),
+        }
+    }
+
+    fn push_back(&mut self, key: &'static str, val: T) {
+        if let Some(list) = self.map.get_mut(key) {
+            list.push_back(val);
+        } else {
+            let mut list = LinkedList::new();
+            list.push_back(val);
+            self.map.insert(key, list);
+        }
+    }
+
+    fn pop_front(&mut self, key: &'static str) -> Option<T> {
+        if let Some(list) = self.map.get_mut(key) {
+            let val = list.pop_front();
+            if list.len() == 0 {
+                self.map.remove(key);
+            }
+            val
+        } else {
+            None
+        }
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+    }
+}
+
 static mut CTX_MAIN: Option<Box<Context>> = None;
 static mut UNUSED_STACK: *mut libc::c_void = ptr::null_mut();
 static mut CONTEXTS: LinkedList<Box<Context>> = LinkedList::new();
+static mut MESSAGES: *mut MappedList<i64> = ptr::null_mut();
+static mut WAITING: *mut MappedList<Box<Context>> = ptr::null_mut();
 
 fn dummy() {
     loop {}
@@ -118,14 +158,29 @@ pub fn spawn_from_main(func: Entry, stack_size: usize) {
 
         CTX_MAIN = Some(Box::new(Context::new(dummy, 0)));
         if let Some(ctx) = &mut CTX_MAIN {
+            // set up global variables
+            let mut msgs = MappedList::new();
+            MESSAGES = &mut msgs as *mut MappedList<i64>;
+
+            let mut waiting = MappedList::new();
+            WAITING = &mut waiting as *mut MappedList<Box<Context>>;
+
             if set_context(ctx.get_regs()) == 0 {
                 CONTEXTS.push_back(Box::new(Context::new(func, stack_size)));
                 let first = CONTEXTS.front_mut().unwrap();
                 switch_context(first.get_regs());
-            } else {
-                rm_unused_stack();
-                CTX_MAIN = None;
             }
+
+            rm_unused_stack();
+
+            // clear global variables
+            CTX_MAIN = None;
+            CONTEXTS.clear();
+            MESSAGES = ptr::null_mut();
+            WAITING = ptr::null_mut();
+
+            msgs.clear();
+            waiting.clear();
         }
     }
 }
@@ -135,6 +190,50 @@ pub fn spawn(func: Entry, stack_size: usize) -> () {
         CONTEXTS.push_back(Box::new(Context::new(func, stack_size)));
         schedule();
     }
+}
+
+pub fn send(key: &'static str, msg: i64) {
+    unsafe {
+        (*MESSAGES).push_back(key, msg);
+
+        if let Some(ctx) = (*WAITING).pop_front(key) {
+            CONTEXTS.push_back(ctx);
+        }
+    }
+    schedule();
+}
+
+pub fn recv(key: &'static str) -> i64 {
+    unsafe {
+        // return if a message is aleady sent
+        if let Some(msg) = (*MESSAGES).pop_front(key) {
+            return msg;
+        }
+
+        // panic if there is no other thread
+        if CONTEXTS.len() == 1 {
+            panic!("waiting never deliverd messages");
+        }
+
+        // make the current context waiting
+        let mut ctx = CONTEXTS.pop_front().unwrap();
+        let regs = ctx.get_regs();
+        (*WAITING).push_back(key, ctx);
+
+        // wait context switch
+        if set_context(regs) == 0 {
+            let next = CONTEXTS.front_mut().unwrap();
+            switch_context((**next).get_regs());
+        }
+
+        rm_unused_stack();
+
+        // take a value
+        if let Some(msg) = (*MESSAGES).pop_front(key) {
+            return msg;
+        }
+    };
+    panic!("never reach here");
 }
 
 pub fn schedule() {
@@ -149,9 +248,8 @@ pub fn schedule() {
         if set_context(regs) == 0 {
             let next = CONTEXTS.front_mut().unwrap();
             switch_context((**next).get_regs());
-        } else {
-            rm_unused_stack();
         }
+        rm_unused_stack();
     }
 }
 
