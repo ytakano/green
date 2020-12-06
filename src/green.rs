@@ -54,6 +54,13 @@ impl Context {
             if result != 0 {
                 panic!("failed posix_memalign");
             }
+
+            unsafe {
+                if libc::mprotect(stack, PAGE_SIZE, libc::PROT_NONE) != 0 {
+                    panic!("mprotect");
+                }
+            }
+
             stack
         } else {
             ptr::null_mut()
@@ -171,6 +178,10 @@ extern "C" fn entry_point() {
 
 unsafe fn rm_unused_stack() {
     if UNUSED_STACK != ptr::null_mut() {
+        if libc::mprotect(UNUSED_STACK, PAGE_SIZE, libc::PROT_READ | libc::PROT_WRITE) != 0 {
+            panic!("mprotect");
+        }
+
         libc::free(UNUSED_STACK);
         UNUSED_STACK = ptr::null_mut();
     }
