@@ -38,34 +38,9 @@ struct Context {
     entry: Entry,
 }
 
-impl Context {
-    fn get_regs(&mut self) -> *mut Registers {
-        &mut self.regs as *mut Registers
-    }
-
-    fn new(func: Entry, stack_size: usize) -> Context {
-        // allocate stack
-        let stack = if stack_size != 0 {
-            let mut stack: *mut libc::c_void = ptr::null_mut();
-            let result = unsafe {
-                libc::posix_memalign(&mut stack as *mut *mut libc::c_void, PAGE_SIZE, stack_size)
-            };
-            if result != 0 {
-                panic!("failed posix_memalign");
-            }
-
-            unsafe {
-                if libc::mprotect(stack, PAGE_SIZE, libc::PROT_NONE) != 0 {
-                    panic!("mprotect");
-                }
-            }
-
-            stack
-        } else {
-            ptr::null_mut()
-        };
-
-        let regs = Registers {
+impl Registers {
+    fn new(sp: u64) -> Registers {
+        Registers {
             d8: 0,
             d9: 0,
             d10: 0,
@@ -85,9 +60,37 @@ impl Context {
             x27: 0,
             x28: 0,
             x30: entry_point as u64,
-            sp: stack as u64 + stack_size as u64,
-        };
+            sp: sp,
+        }
+    }
+}
 
+impl Context {
+    fn get_regs_mut(&mut self) -> *mut Registers {
+        &mut self.regs as *mut Registers
+    }
+
+    fn get_regs(&self) -> *const Registers {
+        &self.regs as *const Registers
+    }
+
+    fn new(func: Entry, stack_size: usize) -> Context {
+        // allocate stack
+        let mut stack: *mut libc::c_void = ptr::null_mut();
+        let result = unsafe {
+            libc::posix_memalign(&mut stack as *mut *mut libc::c_void, PAGE_SIZE, stack_size)
+        };
+        if result != 0 {
+            panic!("failed posix_memalign");
+        }
+
+        unsafe {
+            if libc::mprotect(stack, PAGE_SIZE, libc::PROT_NONE) != 0 {
+                panic!("mprotect");
+            }
+        }
+
+        let regs = Registers::new(stack as u64 + stack_size as u64);
         Context {
             regs: regs,
             stack: stack,
@@ -98,7 +101,7 @@ impl Context {
 
 extern "C" {
     fn set_context(ctx: *mut Registers) -> u64;
-    fn switch_context(ctx: *mut Registers) -> !;
+    fn switch_context(ctx: *const Registers) -> !;
 }
 
 struct MappedList<T> {
@@ -139,23 +142,19 @@ impl<T> MappedList<T> {
     }
 }
 
-static mut CTX_MAIN: Option<Box<Context>> = None;
+static mut CTX_MAIN: Option<Box<Registers>> = None;
 static mut UNUSED_STACK: *mut libc::c_void = ptr::null_mut();
 static mut CONTEXTS: LinkedList<Box<Context>> = LinkedList::new();
 static mut MESSAGES: *mut MappedList<i64> = ptr::null_mut();
 static mut WAITING: *mut MappedList<Box<Context>> = ptr::null_mut();
 
-fn dummy() {
-    loop {}
-}
-
 pub fn spawn_from_main(func: Entry, stack_size: usize) {
     unsafe {
         if let Some(_) = &CTX_MAIN {
-            panic!("spawn_from_main is called again before clean up");
+            panic!("spawn_from_main is called twice");
         }
 
-        CTX_MAIN = Some(Box::new(Context::new(dummy, 0)));
+        CTX_MAIN = Some(Box::new(Registers::new(0)));
         if let Some(ctx) = &mut CTX_MAIN {
             // set up global variables
             let mut msgs = MappedList::new();
@@ -164,9 +163,9 @@ pub fn spawn_from_main(func: Entry, stack_size: usize) {
             let mut waiting = MappedList::new();
             WAITING = &mut waiting as *mut MappedList<Box<Context>>;
 
-            if set_context(ctx.get_regs()) == 0 {
+            if set_context(&mut **ctx as *mut Registers) == 0 {
                 CONTEXTS.push_back(Box::new(Context::new(func, stack_size)));
-                let first = CONTEXTS.front_mut().unwrap();
+                let first = CONTEXTS.front().unwrap();
                 switch_context(first.get_regs());
             }
 
@@ -216,12 +215,12 @@ pub fn recv(key: &'static str) -> Option<i64> {
 
         // make the current context waiting
         let mut ctx = CONTEXTS.pop_front().unwrap();
-        let regs = ctx.get_regs();
+        let regs = ctx.get_regs_mut();
         (*WAITING).push_back(key, ctx);
 
         // wait context switch
         if set_context(regs) == 0 {
-            let next = CONTEXTS.front_mut().unwrap();
+            let next = CONTEXTS.front().unwrap();
             switch_context((**next).get_regs());
         }
 
@@ -239,10 +238,10 @@ pub fn schedule() {
         }
 
         let mut ctx = CONTEXTS.pop_front().unwrap();
-        let regs = ctx.get_regs();
+        let regs = ctx.get_regs_mut();
         CONTEXTS.push_back(ctx);
         if set_context(regs) == 0 {
-            let next = CONTEXTS.front_mut().unwrap();
+            let next = CONTEXTS.front().unwrap();
             switch_context((**next).get_regs());
         }
         rm_unused_stack();
@@ -262,8 +261,8 @@ extern "C" fn entry_point() {
                 switch_context((**c).get_regs());
             }
             None => {
-                if let Some(c) = &mut CTX_MAIN {
-                    switch_context(c.get_regs());
+                if let Some(c) = &CTX_MAIN {
+                    switch_context(&**c as *const Registers);
                 }
             }
         };
