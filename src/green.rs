@@ -1,5 +1,7 @@
-use libc;
+use nix::sys::mman::{mprotect, ProtFlags};
+use std::alloc::{alloc, dealloc, Layout};
 use std::collections::{HashMap, LinkedList};
+use std::ffi::c_void;
 use std::ptr;
 
 type Entry = fn();
@@ -34,7 +36,8 @@ struct Registers {
 
 struct Context {
     regs: Registers,
-    stack: *mut libc::c_void,
+    stack: *mut u8,
+    stack_layout: Layout,
     entry: Entry,
 }
 
@@ -76,24 +79,16 @@ impl Context {
 
     fn new(func: Entry, stack_size: usize) -> Context {
         // allocate stack
-        let mut stack: *mut libc::c_void = ptr::null_mut();
-        let result = unsafe {
-            libc::posix_memalign(&mut stack as *mut *mut libc::c_void, PAGE_SIZE, stack_size)
-        };
-        if result != 0 {
-            panic!("failed posix_memalign");
-        }
+        let layout = Layout::from_size_align(stack_size, PAGE_SIZE).unwrap();
+        let stack = unsafe { alloc(layout) };
 
-        unsafe {
-            if libc::mprotect(stack, PAGE_SIZE, libc::PROT_NONE) != 0 {
-                panic!("mprotect");
-            }
-        }
+        unsafe { mprotect(stack as *mut c_void, PAGE_SIZE, ProtFlags::PROT_NONE).unwrap() };
 
         let regs = Registers::new(stack as u64 + stack_size as u64);
         Context {
             regs: regs,
             stack: stack,
+            stack_layout: layout,
             entry: func,
         }
     }
@@ -143,7 +138,7 @@ impl<T> MappedList<T> {
 }
 
 static mut CTX_MAIN: Option<Box<Registers>> = None;
-static mut UNUSED_STACK: *mut libc::c_void = ptr::null_mut();
+static mut UNUSED_STACK: (*mut u8, Layout) = (ptr::null_mut(), Layout::new::<u8>());
 static mut CONTEXTS: LinkedList<Box<Context>> = LinkedList::new();
 static mut MESSAGES: *mut MappedList<i64> = ptr::null_mut();
 static mut WAITING: *mut MappedList<Box<Context>> = ptr::null_mut();
@@ -254,7 +249,7 @@ extern "C" fn entry_point() {
         ((**ctx).entry)();
 
         let ctx = CONTEXTS.pop_front().unwrap();
-        UNUSED_STACK = (*ctx).stack;
+        UNUSED_STACK = ((*ctx).stack, (*ctx).stack_layout);
 
         match CONTEXTS.front_mut() {
             Some(c) => {
@@ -270,12 +265,14 @@ extern "C" fn entry_point() {
 }
 
 unsafe fn rm_unused_stack() {
-    if UNUSED_STACK != ptr::null_mut() {
-        if libc::mprotect(UNUSED_STACK, PAGE_SIZE, libc::PROT_READ | libc::PROT_WRITE) != 0 {
-            panic!("mprotect");
-        }
-
-        libc::free(UNUSED_STACK);
-        UNUSED_STACK = ptr::null_mut();
+    if UNUSED_STACK.0 != ptr::null_mut() {
+        mprotect(
+            UNUSED_STACK.0 as *mut c_void,
+            PAGE_SIZE,
+            ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+        )
+        .unwrap();
+        dealloc(UNUSED_STACK.0, UNUSED_STACK.1);
+        UNUSED_STACK = (ptr::null_mut(), Layout::new::<u8>());
     }
 }
