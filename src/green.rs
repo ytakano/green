@@ -1,10 +1,9 @@
 use nix::sys::mman::{mprotect, ProtFlags};
+use rand;
 use std::alloc::{alloc, dealloc, Layout};
-use std::collections::{HashMap, LinkedList};
+use std::collections::{HashMap, HashSet, LinkedList};
 use std::ffi::c_void;
 use std::ptr;
-
-static mut ID: u64 = 0;
 
 type Entry = fn();
 
@@ -144,6 +143,7 @@ impl<T> MappedList<T> {
 static mut CTX_MAIN: Option<Box<Registers>> = None;
 static mut UNUSED_STACK: (*mut u8, Layout) = (ptr::null_mut(), Layout::new::<u8>());
 static mut CONTEXTS: LinkedList<Box<Context>> = LinkedList::new();
+static mut ID: *mut HashSet<u64> = ptr::null_mut();
 static mut MESSAGES: *mut MappedList<u64> = ptr::null_mut();
 static mut WAITING: *mut MappedList<Box<Context>> = ptr::null_mut();
 
@@ -162,8 +162,11 @@ pub fn spawn_from_main(func: Entry, stack_size: usize) {
             let mut waiting = MappedList::new();
             WAITING = &mut waiting as *mut MappedList<Box<Context>>;
 
+            let mut ids = HashSet::new();
+            ID = &mut ids as *mut HashSet<u64>;
+
             if set_context(&mut **ctx as *mut Registers) == 0 {
-                CONTEXTS.push_back(Box::new(Context::new(func, stack_size, ID)));
+                CONTEXTS.push_back(Box::new(Context::new(func, stack_size, get_id())));
                 let first = CONTEXTS.front().unwrap();
                 switch_context(first.get_regs());
             }
@@ -175,18 +178,19 @@ pub fn spawn_from_main(func: Entry, stack_size: usize) {
             CONTEXTS.clear();
             MESSAGES = ptr::null_mut();
             WAITING = ptr::null_mut();
+            ID = ptr::null_mut();
 
             msgs.clear();
             waiting.clear();
+            ids.clear();
         }
     }
 }
 
 pub fn spawn(func: Entry, stack_size: usize) -> u64 {
     unsafe {
-        ID += 1;
-        CONTEXTS.push_back(Box::new(Context::new(func, stack_size, ID)));
-        let id = ID;
+        let id = get_id();
+        CONTEXTS.push_back(Box::new(Context::new(func, stack_size, id)));
         schedule();
         id
     }
@@ -206,7 +210,6 @@ pub fn send(key: u64, msg: u64) {
 pub fn recv() -> Option<u64> {
     unsafe {
         let key = CONTEXTS.front().unwrap().id;
-        println!("key = {}", key);
 
         // return if a message is aleady sent
         if let Some(msg) = (*MESSAGES).pop_front(key) {
@@ -259,6 +262,7 @@ extern "C" fn entry_point() {
         ((**ctx).entry)();
 
         let ctx = CONTEXTS.pop_front().unwrap();
+        (*ID).remove(&ctx.id);
         UNUSED_STACK = ((*ctx).stack, (*ctx).stack_layout);
 
         match CONTEXTS.front() {
@@ -284,5 +288,17 @@ unsafe fn rm_unused_stack() {
         .unwrap();
         dealloc(UNUSED_STACK.0, UNUSED_STACK.1);
         UNUSED_STACK = (ptr::null_mut(), Layout::new::<u8>());
+    }
+}
+
+fn get_id() -> u64 {
+    loop {
+        let rnd = rand::random::<u64>();
+        unsafe {
+            if !(*ID).contains(&rnd) {
+                (*ID).insert(rnd);
+                return rnd;
+            };
+        }
     }
 }
