@@ -145,7 +145,7 @@ static mut UNUSED_STACK: (*mut u8, Layout) = (ptr::null_mut(), Layout::new::<u8>
 static mut CONTEXTS: LinkedList<Box<Context>> = LinkedList::new();
 static mut ID: *mut HashSet<u64> = ptr::null_mut();
 static mut MESSAGES: *mut MappedList<u64> = ptr::null_mut();
-static mut WAITING: *mut MappedList<Box<Context>> = ptr::null_mut();
+static mut WAITING: *mut HashMap<u64, Box<Context>> = ptr::null_mut();
 
 pub fn spawn_from_main(func: Entry, stack_size: usize) {
     unsafe {
@@ -159,8 +159,8 @@ pub fn spawn_from_main(func: Entry, stack_size: usize) {
             let mut msgs = MappedList::new();
             MESSAGES = &mut msgs as *mut MappedList<u64>;
 
-            let mut waiting = MappedList::new();
-            WAITING = &mut waiting as *mut MappedList<Box<Context>>;
+            let mut waiting = HashMap::new();
+            WAITING = &mut waiting as *mut HashMap<u64, Box<Context>>;
 
             let mut ids = HashSet::new();
             ID = &mut ids as *mut HashSet<u64>;
@@ -200,7 +200,7 @@ pub fn send(key: u64, msg: u64) {
     unsafe {
         (*MESSAGES).push_back(key, msg);
 
-        if let Some(ctx) = (*WAITING).pop_front(key) {
+        if let Some(ctx) = (*WAITING).remove(&key) {
             CONTEXTS.push_back(ctx);
         }
     }
@@ -224,7 +224,7 @@ pub fn recv() -> Option<u64> {
         // make the current context waiting
         let mut ctx = CONTEXTS.pop_front().unwrap();
         let regs = ctx.get_regs_mut();
-        (*WAITING).push_back(key, ctx);
+        (*WAITING).insert(key, ctx);
 
         // wait context switch
         if set_context(regs) == 0 {
