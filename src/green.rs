@@ -4,6 +4,8 @@ use std::collections::{HashMap, LinkedList};
 use std::ffi::c_void;
 use std::ptr;
 
+static mut ID: u64 = 0;
+
 type Entry = fn();
 
 const PAGE_SIZE: usize = 4 * 1024; // 4KiB
@@ -39,6 +41,7 @@ struct Context {
     stack: *mut u8,
     stack_layout: Layout,
     entry: Entry,
+    id: u64,
 }
 
 impl Registers {
@@ -77,7 +80,7 @@ impl Context {
         &self.regs as *const Registers
     }
 
-    fn new(func: Entry, stack_size: usize) -> Context {
+    fn new(func: Entry, stack_size: usize, id: u64) -> Context {
         // allocate stack
         let layout = Layout::from_size_align(stack_size, PAGE_SIZE).unwrap();
         let stack = unsafe { alloc(layout) };
@@ -90,6 +93,7 @@ impl Context {
             stack: stack,
             stack_layout: layout,
             entry: func,
+            id: id,
         }
     }
 }
@@ -100,7 +104,7 @@ extern "C" {
 }
 
 struct MappedList<T> {
-    map: HashMap<&'static str, LinkedList<T>>,
+    map: HashMap<u64, LinkedList<T>>,
 }
 
 impl<T> MappedList<T> {
@@ -110,8 +114,8 @@ impl<T> MappedList<T> {
         }
     }
 
-    fn push_back(&mut self, key: &'static str, val: T) {
-        if let Some(list) = self.map.get_mut(key) {
+    fn push_back(&mut self, key: u64, val: T) {
+        if let Some(list) = self.map.get_mut(&key) {
             list.push_back(val);
         } else {
             let mut list = LinkedList::new();
@@ -120,11 +124,11 @@ impl<T> MappedList<T> {
         }
     }
 
-    fn pop_front(&mut self, key: &'static str) -> Option<T> {
-        if let Some(list) = self.map.get_mut(key) {
+    fn pop_front(&mut self, key: u64) -> Option<T> {
+        if let Some(list) = self.map.get_mut(&key) {
             let val = list.pop_front();
             if list.len() == 0 {
-                self.map.remove(key);
+                self.map.remove(&key);
             }
             val
         } else {
@@ -140,7 +144,7 @@ impl<T> MappedList<T> {
 static mut CTX_MAIN: Option<Box<Registers>> = None;
 static mut UNUSED_STACK: (*mut u8, Layout) = (ptr::null_mut(), Layout::new::<u8>());
 static mut CONTEXTS: LinkedList<Box<Context>> = LinkedList::new();
-static mut MESSAGES: *mut MappedList<i64> = ptr::null_mut();
+static mut MESSAGES: *mut MappedList<u64> = ptr::null_mut();
 static mut WAITING: *mut MappedList<Box<Context>> = ptr::null_mut();
 
 pub fn spawn_from_main(func: Entry, stack_size: usize) {
@@ -153,13 +157,13 @@ pub fn spawn_from_main(func: Entry, stack_size: usize) {
         if let Some(ctx) = &mut CTX_MAIN {
             // set up global variables
             let mut msgs = MappedList::new();
-            MESSAGES = &mut msgs as *mut MappedList<i64>;
+            MESSAGES = &mut msgs as *mut MappedList<u64>;
 
             let mut waiting = MappedList::new();
             WAITING = &mut waiting as *mut MappedList<Box<Context>>;
 
             if set_context(&mut **ctx as *mut Registers) == 0 {
-                CONTEXTS.push_back(Box::new(Context::new(func, stack_size)));
+                CONTEXTS.push_back(Box::new(Context::new(func, stack_size, ID)));
                 let first = CONTEXTS.front().unwrap();
                 switch_context(first.get_regs());
             }
@@ -178,14 +182,17 @@ pub fn spawn_from_main(func: Entry, stack_size: usize) {
     }
 }
 
-pub fn spawn(func: Entry, stack_size: usize) -> () {
+pub fn spawn(func: Entry, stack_size: usize) -> u64 {
     unsafe {
-        CONTEXTS.push_back(Box::new(Context::new(func, stack_size)));
+        ID += 1;
+        CONTEXTS.push_back(Box::new(Context::new(func, stack_size, ID)));
+        let id = ID;
         schedule();
+        id
     }
 }
 
-pub fn send(key: &'static str, msg: i64) {
+pub fn send(key: u64, msg: u64) {
     unsafe {
         (*MESSAGES).push_back(key, msg);
 
@@ -196,8 +203,11 @@ pub fn send(key: &'static str, msg: i64) {
     schedule();
 }
 
-pub fn recv(key: &'static str) -> Option<i64> {
+pub fn recv() -> Option<u64> {
     unsafe {
+        let key = CONTEXTS.front().unwrap().id;
+        println!("key = {}", key);
+
         // return if a message is aleady sent
         if let Some(msg) = (*MESSAGES).pop_front(key) {
             return Some(msg);
@@ -251,7 +261,7 @@ extern "C" fn entry_point() {
         let ctx = CONTEXTS.pop_front().unwrap();
         UNUSED_STACK = ((*ctx).stack, (*ctx).stack_layout);
 
-        match CONTEXTS.front_mut() {
+        match CONTEXTS.front() {
             Some(c) => {
                 switch_context((**c).get_regs());
             }

@@ -25,15 +25,17 @@ fn gaia() {
 
 fn producer() {
     green::spawn(gaia, 2 * 1024 * 1024);
-    green::spawn(consumer, 2 * 1024 * 1024);
+    let id = green::spawn(consumer, 2 * 1024 * 1024);
+    println!("id = {}", id);
     for i in 0..10 {
-        green::send("count", i);
+        green::send(id, i);
     }
 }
 
 fn consumer() {
+    println!("consumer");
     for _ in 0..10 {
-        let msg = green::recv("count").unwrap();
+        let msg = green::recv().unwrap();
         println!("received: count -> {}", msg);
     }
 }
