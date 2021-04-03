@@ -1,7 +1,15 @@
-.global set_context
-.global switch_context
+#ifdef __APPLE__
+    #define SET_CONTEXT _set_context
+    #define SWITCH_CONTEXT _switch_context
+#else
+    #define SET_CONTEXT set_context
+    #define SWITCH_CONTEXT switch_context
+#endif
 
-set_context:
+.global SET_CONTEXT
+.global SWITCH_CONTEXT
+
+SET_CONTEXT:
     stp d8, d9, [x0]
     stp d10, d11, [x0, #16]
     stp d12, d13, [x0, #16 * 2]
@@ -18,7 +26,7 @@ set_context:
     mov x0, 0
     ret
 
-switch_context:
+SWITCH_CONTEXT:
     ldp d8, d9, [x0]
     ldp d10, d11, [x0, #16]
     ldp d12, d13, [x0, #16 * 2]
